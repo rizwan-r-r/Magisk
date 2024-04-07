@@ -2,7 +2,8 @@ use std::cmp::min;
 use std::ffi::{CStr, FromBytesWithNulError, OsStr};
 use std::fmt::{Arguments, Debug, Display, Formatter, Write};
 use std::ops::{Deref, DerefMut};
-use std::path::Path;
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
 use std::str::{Utf8Chunks, Utf8Error};
 use std::{fmt, mem, slice, str};
 
@@ -105,7 +106,7 @@ trait AsUtf8CStr {
 
 // Implementation for Utf8CString
 
-trait StringExt {
+pub trait StringExt {
     fn nul_terminate(&mut self) -> &mut [u8];
 }
 
@@ -117,6 +118,21 @@ impl StringExt for String {
         unsafe {
             let buf = slice::from_raw_parts_mut(self.as_mut_ptr(), self.len() + 1);
             *buf.get_unchecked_mut(self.len()) = b'\0';
+            buf
+        }
+    }
+}
+
+impl StringExt for PathBuf {
+    #[allow(mutable_transmutes)]
+    fn nul_terminate(&mut self) -> &mut [u8] {
+        self.reserve(1);
+        // SAFETY: the PathBuf is reserved to have enough capacity to fit in the null byte
+        // SAFETY: the null byte is explicitly added outside of the PathBuf's length
+        unsafe {
+            let bytes: &mut [u8] = mem::transmute(self.as_mut_os_str().as_bytes());
+            let buf = slice::from_raw_parts_mut(bytes.as_mut_ptr(), bytes.len() + 1);
+            *buf.get_unchecked_mut(bytes.len()) = b'\0';
             buf
         }
     }
@@ -435,6 +451,7 @@ pub struct FsPathBuf<'a>(&'a mut dyn Utf8CStrWrite);
 
 impl<'a> FsPathBuf<'a> {
     pub fn new(value: &'a mut dyn Utf8CStrWrite) -> Self {
+        value.clear();
         FsPathBuf(value)
     }
 
@@ -640,7 +657,8 @@ macro_rules! cstr {
         );
         #[allow(unused_unsafe)]
         unsafe {
-            $crate::Utf8CStr::from_bytes_unchecked(concat!($($str)*, "\0").as_bytes())
+            $crate::Utf8CStr::from_bytes_unchecked($crate::const_format::concatcp!($($str)*, "\0")
+                .as_bytes())
         }
     }};
 }
@@ -648,6 +666,6 @@ macro_rules! cstr {
 #[macro_export]
 macro_rules! raw_cstr {
     ($($str:tt)*) => {{
-        cstr!($($str)*).as_ptr()
+        $crate::cstr!($($str)*).as_ptr()
     }};
 }
